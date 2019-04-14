@@ -7,6 +7,7 @@ module buffet_control
             //Read in and out
             read_idx_i,
             read_idx_valid_i,
+            read_data_ready_i,
             read_idx_o,
             read_idx_valid_o,
             read_idx_ready_o,
@@ -42,6 +43,7 @@ parameter DATA_WIDTH = 32;
 parameter ADDR_WIDTH = 8;
 parameter SIZE = 2 ** ADDR_WIDTH;
 
+localparam READY=2'b00, WAIT=2'b01, DISPATCH=2'b10;
 //------------------------------------------------------------------
 //	                   INPUT/OUTPUT PORTS
 //------------------------------------------------------------------
@@ -52,6 +54,7 @@ input                       clk, nreset_i;
 input   [ADDR_WIDTH-1:0]    read_idx_i;
 output  [ADDR_WIDTH-1:0]    read_idx_o;
 input                       read_idx_valid_i;
+input                       read_data_ready_i;
 output                      read_idx_valid_o;
 output                      read_idx_ready_o;
 input                       read_will_update;
@@ -84,19 +87,19 @@ output                      credit_valid;
 //------------------------------------------------------------------
 
 reg     [ADDR_WIDTH-1:0]    head, tail;
-reg     [1:0]               state;
+reg     [1:0]               read_state;
 
 // Output registers
 reg     [ADDR_WIDTH-1:0]    read_idx_o_r, push_idx_o_r, update_idx_o_r, credit_out_r;
 reg     [DATA_WIDTH-1:0]    push_data_o_r, update_data_o_r;
 reg                         read_idx_valid_o_r, push_data_valid_o_r, update_valid_o_r, credit_valid_r;
 reg                         read_idx_ready_o_r, update_ready_o_r;
-reg     [ADDR_WIDTH-1:0]    read_idx_stage1_r, read_idx_stage2_r;
-reg                         read_idx_valid_stage1_r, read_idx_valid_stage2_r;
+reg     [ADDR_WIDTH-1:0]    read_idx_i_r, read_idx_stage_r;
+reg                         read_idx_valid_i_r, read_idx_valid_stage_r;
 reg                         stall_r;
 
-reg     [ADDR_WIDTH-1:0]    scoreboard  [`SCOREBOARD_SIZE-1:0];
-reg     [`SCOREBOARD_SIZE-1:0] scoreboard_valid;
+reg     [ADDR_WIDTH-1:0]        scoreboard  [`SCOREBOARD_SIZE-1:0];
+reg     [`SCOREBOARD_SIZE-1:0]  scoreboard_valid;
 
 //------------------------------------------------------------------
 //	                   WIRES 
@@ -130,7 +133,7 @@ wire [1:0]                  event_cur = {read_event, shrink_event, write_event, 
 
 // check if the read is between the head and tail
     // This changes based on head_greater_than_tail value (first check if the read is valid)
-wire                        read_valid_hgtt = ((read_idx_stage1_r < head) && (read_idx_stage1_r>tail))? 1'b1 :1'b0;
+wire                        read_valid_hgtt = ((read_idx_i_r < head) && (read_idx_i_r >= tail))? 1'b1 :1'b0;
 wire                        read_valid_hgtt_n = ~read_valid_hgtt;
 wire                        read_valid = (head_greater_than_tail)? read_valid_hgtt : read_valid_hgtt_n;
 // WAR hazard is when you are trying to read something that is not present in the buffet yet - wait till you receive it.
@@ -144,17 +147,15 @@ wire    [`SCOREBOARD_SIZE-1:0]  match;
 genvar i;
 generate
 for (i = 0; i < `SCOREBOARD_SIZE; i = i + 1) begin : SCOREBOARD_COMP
-    assign match[i] = (scoreboard[i] == read_idx_stage1_r) ? 1'b1:1'b0;
+    assign match[i] = (scoreboard_valid[i])? ((scoreboard[i] == read_idx_i_r) ? 1'b1:1'b0) : 1'b0;
 end
 endgenerate
 
-// Any valid scoreboard
-wire                        empty_scoreboard = ~(&scoreboard_valid);
 //Any match?
-wire                        raw_hazard = (empty_scoreboard)? 1'b0 : |match;
+wire                        raw_hazard = |match;
 
 // Pipeline should stall on gazards TODO
-wire                        stall = 1'b0; //raw_hazard | war_hazard;
+wire                        stall = raw_hazard | war_hazard | ~read_data_ready_i;
 
 //------------------------------------------------------------------
 //	                   SEQUENTIAL LOGIC
@@ -219,9 +220,8 @@ end
 always @(posedge clk) begin
     if(push_data_valid_i)
         push_data_o_r <= push_data_i;
+        push_idx_o_r  <= head;
 end
-
-
 
 //----------------------------------------------------------------------------------//
 
@@ -266,7 +266,6 @@ assign  update_ready_o = 1'b1;
 // Read gets stalled if (1) tries to get something that is slated for an update (2) beyond the window.
 // Otherwise, simply return the data.
 
-/*
 // State Machine
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
@@ -275,78 +274,84 @@ always @(posedge clk or negedge nreset_i) begin
     else begin
         case(read_state)
 
+        // Check if there are hazards
         READY:
-            read_state <= (read_event)? ((raw_hazard) ? RAW_WAIT :
-                                            ( (war_hazard)? WAR_WAIT : READ)):
-                                        READY;
+            read_state <= (read_idx_valid_i_r)? ((stall) ? WAIT : DISPATCH): READY;
 
-        RAW_WAIT:
-            read_state <= (raw_hazard)? READ : RAW_WAIT;
+        // Wait till hazards are cleared
+        WAIT:
+            read_state <= (stall)? WAIT:DISPATCH;
 
-        WAR_WAIT:
-            read_state <= (war_hazard)? READ : WAR_WAIT;
+        // Dispatch and go back
+        DISPATCH:
+            read_state <= READY;
 
-        READ:
-            read_state <= (read_event)? ((raw_hazard) ? RAW_WAIT :
-                                            ( (war_hazard)? WAR_WAIT : READ)):
-                                        READY;
         endcase
     end
 end
-*/
 
-// -------------- Pipeline reg0 -- register the input----------//
-
-// If there is a RAW/WAR hazard, we would have made sure to deassert the ready. Hence, any read request
-// arriving during stall need not be registered.
-//
-always @(posedge clk) begin 
-    if(read_event & ~stall_r) begin
-        read_idx_stage1_r <= read_idx_i + head;
-        read_idx_valid_stage1_r <= read_idx_valid_i;
-    end
-end
-
-// Keep this up to date
+// this always block registers new read events 
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
-        read_idx_valid_stage1_r <= 1'b0;
+        read_idx_valid_i_r  <= 1'b0;
+        read_idx_i_r        <= {ADDR_WIDTH{1'b0}};
     end
-    else
-        read_idx_valid_stage1_r <= read_idx_valid_i;
-end
-
-// If the read is going to update, add the entry to the scoreboard
-
-//--------------- Pipeline Reg 1 -- Check for hazards -----------//
-
-// Between reg0 and reg 1, the hazards are looked for. Pipeline would be stalled if a hazard is found.
-
-always @(posedge clk) begin
-    if(~stall_r & read_idx_valid_stage1_r) begin
-        read_idx_stage2_r <= read_idx_stage1_r;
-        read_idx_valid_stage2_r <= read_idx_valid_stage1_r;
+    else begin
+        if(read_event & (read_state != WAIT)) begin
+            read_idx_valid_i_r  <= read_idx_valid_i;
+            read_idx_i_r        <= read_idx_i + tail;
+        end
+        else if((read_idx_valid_stage_r) & (read_state == DISPATCH)) begin
+            read_idx_valid_i_r  <= 1'b1;
+            read_idx_i_r        <= read_idx_stage_r;
+        end
+        else
+            read_idx_valid_i_r  <= 1'b0;
     end
 end
 
-// Stall is registered. Note that stall drives the ready signal down.
-// Pull the ready low if a hazard comes
+// When we are waiting for hazard to be cleared, there is a chance for one more
+// read to appear (due to the propogation delay of ready signal). In that case.
+// we need to stage that read to be considered after the hazard is cleared.
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
-        stall_r <= 1'b0;
+        read_idx_valid_stage_r  <= 1'b0;
+        read_idx_stage_r        <= {ADDR_WIDTH{1'b0}};
+    end
+    else begin
+        if(read_event & (read_state == WAIT)) begin
+            read_idx_valid_stage_r  <= read_idx_valid_i;
+            read_idx_stage_r        <= read_idx_i + tail;
+        end
+    end
+end
+
+// Ready is pulled low whenever (1) You detect a hazard (2) waiting to resolve a hazard
+// (3) there is a staged data already.
+always @(posedge clk or negedge nreset_i) begin
+    if(~nreset_i) begin
+        read_idx_ready_o_r <= 1'b0;
     end
     else
-        stall_r <= stall;
+        read_idx_ready_o_r <= (
+                                ((read_state == READY)&(read_idx_valid_i_r)&(stall))|
+                                    (read_state == WAIT) |
+                                        ((read_idx_valid_stage_r) & (read_state == DISPATCH))
+                                            )? 1'b0 : 1'b1;
 end
 
 // --------------- Pipeline Output -- if clean, send output ------//
 
-    // As soon as all the stalls are clear, read request is sent out
+always @(posedge clk or negedge nreset_i) begin
+    if(~nreset_i)
+        read_idx_valid_o_r <= 1'b0;
+    else
+        read_idx_valid_o_r <= (read_state == DISPATCH)?1'b1:1'b0;
+end
+
 always @(posedge clk) begin
-    if(~stall_r & read_idx_valid_stage2_r) begin
-        read_idx_o_r <= read_idx_stage2_r;
-        read_idx_valid_o_r <= read_idx_valid_stage2_r;
-    end
+    if(read_state == DISPATCH)
+        read_idx_o_r <= read_idx_i_r;
 end
 
 //----------------------------------------------------------------------------------//
@@ -396,6 +401,6 @@ assign update_ready_o = update_ready_o_r;
 // Read
 assign read_idx_o = read_idx_o_r;
 assign read_idx_valid_o = read_idx_valid_o_r;
-assign read_idx_ready_o = ~stall_r;
+assign read_idx_ready_o = read_idx_ready_o_r;
 
 endmodule

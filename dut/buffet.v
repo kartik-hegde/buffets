@@ -103,7 +103,7 @@ module buffet(
 wire    [IDX_WIDTH-1:0]     read_idx_fifo, update_idx_fifo;
 wire    [DATA_WIDTH-1:0]    push_data_fifo, update_data_fifo;
 wire                        read_idx_fifo_valid, read_idx_buffet_ready, read_will_update_fifo, is_shrink_fifo;
-wire                        push_data_fifo_valid, update_idx_fifo_valid, update_buffet_ready;
+wire                        push_data_fifo_valid, update_idx_fifo_valid, update_buffet_ready, read_data_fifo_ready;
 
 wire    [IDX_WIDTH-1:0]     araddr_buffet, waddr0_buffet, waddr1_buffet;
 wire    [DATA_WIDTH-1:0]    read_data_buffet, wdata0_buffet, wdata1_buffet;
@@ -147,7 +147,7 @@ fifo
             .nreset_i(nreset_i),
             .data_i(read_data_buffet),
             .data_i_valid(read_data_buffet_valid),
-            .data_i_ready(), //TODO
+            .data_i_ready(read_data_fifo_ready),
             .data_o(read_data),
             .data_o_valid(read_data_valid),
             .data_o_ready(read_data_ready)
@@ -203,6 +203,7 @@ buffet_control
             // read index input and output
             .read_idx_i(read_idx_fifo),
             .read_idx_valid_i(read_idx_fifo_valid),
+            .read_data_ready_i(read_data_fifo_ready),
             .read_idx_o(araddr_buffet),
             .read_idx_valid_o(arvalid_buffet),
             .read_idx_ready_o(read_idx_buffet_ready),
