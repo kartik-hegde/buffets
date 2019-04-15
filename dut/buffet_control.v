@@ -1,3 +1,36 @@
+// 
+// Author: Kartik Hegde (kartikhegde.net)
+//
+//	Copyright (c) 2019, Authors of "Buffets: An Efficient and Composable Storage Idiom for Explicit Decoupled Data
+//	Orchestration"
+//	All rights reserved.
+//
+//	Redistribution and use in source and binary forms, with or without modification,
+//	are permitted provided that the following conditions are met:
+//
+//		- Redistributions of source code must retain the above copyright notice,
+//			this list of conditions and the following disclaimer.
+//		- Redistributions in binary form must reproduce the above copyright
+//			notice, this list of conditions and the following disclaimer
+//			in the documentation and/or other materials provided with the
+//			distribution.
+//		- Neither the name of the University of California, Berkeley nor the
+//			names of its contributors may be used to endorse or promote
+//			products derived from this software without specific prior
+//			written permission.
+//
+//	THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+//	ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+//	WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+//	DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+//	ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+//	(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+//	LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+//	ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//	(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+//	SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
 `include "buffet_defines.v"
 
 module buffet_control
@@ -86,7 +119,7 @@ output                      credit_valid;
 //	                   REGISTERS
 //------------------------------------------------------------------
 
-reg     [ADDR_WIDTH-1:0]    head, tail;
+reg     [ADDR_WIDTH-1:0]    tail, head;
 reg     [1:0]               read_state;
 
 // Output registers
@@ -94,8 +127,9 @@ reg     [ADDR_WIDTH-1:0]    read_idx_o_r, push_idx_o_r, update_idx_o_r, credit_o
 reg     [DATA_WIDTH-1:0]    push_data_o_r, update_data_o_r;
 reg                         read_idx_valid_o_r, push_data_valid_o_r, update_valid_o_r, credit_valid_r;
 reg                         read_idx_ready_o_r, update_ready_o_r;
-reg     [ADDR_WIDTH-1:0]    read_idx_i_r, read_idx_stage_r;
-reg                         read_idx_valid_i_r, read_idx_valid_stage_r;
+reg                         read_will_update_r, read_will_update_stage_r;
+reg     [ADDR_WIDTH-1:0]    read_idx_i_r, update_idx_i_r, read_idx_stage_r;
+reg                         read_idx_valid_i_r, read_idx_valid_stage_r, update_valid_i_r;
 reg                         stall_r;
 
 reg     [ADDR_WIDTH-1:0]        scoreboard  [`SCOREBOARD_SIZE-1:0];
@@ -105,18 +139,18 @@ reg     [`SCOREBOARD_SIZE-1:0]  scoreboard_valid;
 //	                   WIRES 
 //------------------------------------------------------------------
 
-// Head Tail chase has two cases: (1) one where head is greater than tail and (2) vice versa
-wire                        head_greater_than_tail = (head < tail)? 1'b0:1'b1;
+// Head Tail chase has two cases: (1) one where tail is greater than head and (2) vice versa
+wire                        tail_greater_than_head = (tail < head)? 1'b0:1'b1;
 
-// Distance between the tail and the end of the FIFO
-wire    [ADDR_WIDTH-1:0]     tail_offset = SIZE - tail;
+// Distance between the head and the end of the FIFO
+wire    [ADDR_WIDTH-1:0]     head_offset = SIZE - head;
 
-// Distance between head and tail (applicable in case 1)
-wire    [ADDR_WIDTH-1:0]     head_tail_distance = head - tail;
+// Distance between tail and head (applicable in case 1)
+wire    [ADDR_WIDTH-1:0]     tail_head_distance = tail - head;
 
-// In case 1, head_tail_distance directly gives occupancy, in case (2) offset needs to be added to head.
-wire    [ADDR_WIDTH-1:0]     occupancy = (head_greater_than_tail)? head_tail_distance :
-                                        (head + tail_offset);
+// In case 1, tail_head_distance directly gives occupancy, in case (2) offset needs to be added to tail.
+wire    [ADDR_WIDTH-1:0]     occupancy = (tail_greater_than_head)? tail_head_distance :
+                                        (tail + head_offset);
 
 // Available space in the bbuffer
 wire    [ADDR_WIDTH-1:0]     space_avail = SIZE - occupancy;
@@ -131,31 +165,43 @@ wire                        write_event = push_data_valid_i;
 wire                        update_event = update_valid_i;
 wire [1:0]                  event_cur = {read_event, shrink_event, write_event, update_event};
 
-// check if the read is between the head and tail
-    // This changes based on head_greater_than_tail value (first check if the read is valid)
-wire                        read_valid_hgtt = ((read_idx_i_r < head) && (read_idx_i_r >= tail))? 1'b1 :1'b0;
+// check if the read is between the tail and head
+// This changes based on tail_greater_than_head value (first check if the read is valid)
+
+wire                        read_valid_hgtt = ((read_idx_i_r < tail) && (read_idx_i_r >= head))? 1'b1 :1'b0;
 wire                        read_valid_hgtt_n = ~read_valid_hgtt;
-wire                        read_valid = (head_greater_than_tail)? read_valid_hgtt : read_valid_hgtt_n;
+wire                        read_valid = (tail_greater_than_head)? read_valid_hgtt : read_valid_hgtt_n;
 // WAR hazard is when you are trying to read something that is not present in the buffet yet - wait till you receive it.
 // Caution: this might lead to a lock -- TODO a way to retire waiting reads.
 wire                        war_hazard = ~read_valid;
 
 // RAW hazard detection is simply checking the outstanding updates
 
-wire    [`SCOREBOARD_SIZE-1:0]  match;
+wire    [`SCOREBOARD_SIZE-1:0]  match_read, match_update;
 
 genvar i;
 generate
 for (i = 0; i < `SCOREBOARD_SIZE; i = i + 1) begin : SCOREBOARD_COMP
-    assign match[i] = (scoreboard_valid[i])? ((scoreboard[i] == read_idx_i_r) ? 1'b1:1'b0) : 1'b0;
+    assign match_read[i] = (scoreboard_valid[i])? ((scoreboard[i] == read_idx_i_r) ? 1'b1:1'b0) : 1'b0;
+    assign match_update[i] = (scoreboard_valid[i])? ((scoreboard[i] == update_idx_i_r) ? 1'b1:1'b0) : 1'b0;
 end
 endgenerate
 
 //Any match?
-wire                        raw_hazard = |match;
+wire                        raw_hazard = |match_read;
 
-// Pipeline should stall on gazards TODO
+// Pipeline should stall on hazards
 wire                        stall = raw_hazard | war_hazard | ~read_data_ready_i;
+
+// Next scoreboard entry - TODO use generic LZ
+wire    [$clog2(`SCOREBOARD_SIZE)-1:0] next_entry;
+priorityEncoder #(`SCOREBOARD_SIZE) u_nextslot(.in(scoreboard_valid), .out(next_entry));
+
+// Match address (reverse the match and then find the leading zeros
+wire    [`SCOREBOARD_SIZE-1:0]          match_reversed;
+wire    [$clog2(`SCOREBOARD_SIZE):0]    match_addr;
+reverse #(`SCOREBOARD_SIZE) u_reverse(.bus_i(match_update), .bus_o(match_reversed));
+leadingZero8 u_LZE8(.sequence(match_reversed), .index(match_addr));
 
 //------------------------------------------------------------------
 //	                   SEQUENTIAL LOGIC
@@ -192,7 +238,7 @@ end
        //**********************//
        
 // Producer will never send more data than there is space --> due to credit req/rsp..
-// Therefore, there is nothing tricky here - as you get the data, update the head 
+// Therefore, there is nothing tricky here - as you get the data, update the tail 
 // and push the data to the buffer.
 
 //push  data output valid reflects the input 
@@ -205,14 +251,14 @@ always @(posedge clk or negedge nreset_i) begin
     end
 end
 
-// Update the head (Counter wraps around)
+// Update the tail (Counter wraps around)
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
-        head <= {ADDR_WIDTH{1'b0}};
+        tail <= {ADDR_WIDTH{1'b0}};
     end
     else begin
         if(push_data_valid_i)
-            head <= head + 1'b1;
+            tail <= tail + 1'b1;
     end
 end
 
@@ -220,7 +266,7 @@ end
 always @(posedge clk) begin
     if(push_data_valid_i)
         push_data_o_r <= push_data_i;
-        push_idx_o_r  <= head;
+        push_idx_o_r  <= tail;
 end
 
 //----------------------------------------------------------------------------------//
@@ -236,24 +282,38 @@ end
 // acknowledgement of update. TODO: Arbitration
 // NOTE: This problem does not exist if the update gets static priority over the writes.
 
+// We will first register the update request.
+always @(posedge clk or negedge nreset_i) begin
+    if(~nreset_i) begin
+        update_valid_i_r <= 1'b0;
+        update_idx_i_r   <= {ADDR_WIDTH{1'b0}};
+    end
+    else begin
+        if(update_valid_i) begin
+            update_valid_i_r <= 1'b1;
+            update_idx_i_r <= update_idx_i;
+        end
+    end
+end
+
+// Send off update
 // Set the update valid
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
         update_valid_o_r <= 1'b0;
     end
     else begin
-        update_valid_o_r <= update_valid_i;
+        update_valid_o_r <= update_valid_i_r;
     end
 end
 
-// Send off update
 always @(posedge clk) begin
-    if(update_valid_i)
+    if(update_valid_i_r) begin
+        update_idx_o_r  <= update_idx_i_r;
         update_data_o_r <= update_data_i;
+    end
 end
 
-// Always ready to take the updates in
-assign  update_ready_o = 1'b1;
 
 // We will update the scoreboard separately
 
@@ -294,19 +354,23 @@ end
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
         read_idx_valid_i_r  <= 1'b0;
+        read_will_update_r  <= 1'b0;
         read_idx_i_r        <= {ADDR_WIDTH{1'b0}};
     end
     else begin
         if(read_event & (read_state != WAIT)) begin
             read_idx_valid_i_r  <= read_idx_valid_i;
-            read_idx_i_r        <= read_idx_i + tail;
+            read_will_update_r  <= read_will_update;
+            read_idx_i_r        <= read_idx_i + head;
         end
         else if((read_idx_valid_stage_r) & (read_state == DISPATCH)) begin
             read_idx_valid_i_r  <= 1'b1;
+            read_will_update_r  <= read_will_update_stage_r;
             read_idx_i_r        <= read_idx_stage_r;
         end
-        else
+        else begin
             read_idx_valid_i_r  <= 1'b0;
+        end
     end
 end
 
@@ -316,12 +380,14 @@ end
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
         read_idx_valid_stage_r  <= 1'b0;
+        read_will_update_stage_r<= 1'b0;
         read_idx_stage_r        <= {ADDR_WIDTH{1'b0}};
     end
     else begin
         if(read_event & (read_state == WAIT)) begin
             read_idx_valid_stage_r  <= read_idx_valid_i;
-            read_idx_stage_r        <= read_idx_i + tail;
+            read_will_update_stage_r<= read_will_update;
+            read_idx_stage_r        <= read_idx_i + head;
         end
     end
 end
@@ -360,26 +426,38 @@ end
         // ***  Shrink Logic ***//
        //**********************//
 
-// If a valid shrink comes in, we update the tail. (This is the only driver for tail reg)
+// If a valid shrink comes in, we update the head. (This is the only driver for head reg)
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) begin
-        tail <= {ADDR_WIDTH{1'b0}};
+        head <= {ADDR_WIDTH{1'b0}};
     end
     else begin
         if(shrink_event)
-            tail <= tail + read_idx_i;
+            head <= head + read_idx_i;
     end
 end
 
 //----------------------------------------------------------------------------------//
 //
-         //**********************//
-        // ***  Update Logic ***//
+         //***********************//
+        // ***Scoreboard Logic***//
        //**********************//
-       
+
+// Need to do two things:
+// 1. When a read says it will update, add an entry
+// 2. When an update comes, clear the entry
 always @(posedge clk or negedge nreset_i) begin
     if(~nreset_i) 
         scoreboard_valid <= {`SCOREBOARD_SIZE{1'b0}};
+    else begin
+        if((read_state == DISPATCH) && (read_will_update_r)) begin
+            scoreboard_valid[next_entry]    <= 1'b1;
+            scoreboard[next_entry]          <= read_idx_i_r;
+        end
+        if(update_valid_i_r) begin
+            scoreboard_valid[match_addr]    <= 1'b0;
+        end
+    end
 end
 
 //------------------------------------------------------------------
@@ -397,7 +475,8 @@ assign push_data_valid_o = push_data_valid_o_r;
 assign update_data_o = update_data_o_r;
 assign update_idx_o = update_idx_o_r;
 assign update_valid_o = update_valid_o_r;
-assign update_ready_o = update_ready_o_r;
+// Always ready to take the updates in
+assign  update_ready_o = 1'b1;
 // Read
 assign read_idx_o = read_idx_o_r;
 assign read_idx_valid_o = read_idx_valid_o_r;

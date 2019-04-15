@@ -9,6 +9,7 @@ module buffet(
             read_data_valid,
             read_idx,
             read_idx_valid,
+            read_idx_ready,
             read_will_update,
             // Write Port
             push_data,
@@ -71,6 +72,7 @@ module buffet(
 	// No response for shrinks.
 	input  [IDX_WIDTH-1:0]  read_idx;
 	input                   read_idx_valid;
+    output                  read_idx_ready;
 	input                   read_will_update;
 	output [DATA_WIDTH-1:0] read_data;
 	output                  read_data_valid;
@@ -129,7 +131,7 @@ fifo
             .nreset_i(nreset_i),
             .data_i({read_idx, read_will_update, is_shrink}),
             .data_i_valid(read_idx_valid),
-            .data_i_ready(read_idx_fifo_ready),
+            .data_i_ready(read_idx_ready),
             .data_o({read_idx_fifo, read_will_update_fifo, is_shrink_fifo}),
             .data_o_valid(read_idx_fifo_valid),
             .data_o_ready(read_idx_buffet_ready)

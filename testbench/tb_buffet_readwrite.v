@@ -27,6 +27,7 @@ reg                   read_will_update;
 wire [DATA_WIDTH-1:0] read_data;
 wire                  read_data_valid;
 reg                   read_data_ready;
+wire                  read_idx_ready;
 
 // Operation: Shrink(Size) -> void
 // Shrinks share the same port as read in order to maintain ordering.
@@ -53,6 +54,7 @@ buffet  u_buffet(
             read_data_valid,
             read_idx,
             read_idx_valid,
+            read_idx_ready,
             read_will_update,
             // Write Port
             push_data,
