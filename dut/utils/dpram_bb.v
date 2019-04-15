@@ -19,33 +19,48 @@
 
 
 
-// TODO: Make these parametrizable
-module priorityEncoder
-			(
-			in,
-			out
-			);
+// Simple RAM File
 
-parameter 	WIDTH = 8;
-localparam  OWIDTH = $clog2(WIDTH);
+module dpram_bb (
+				CLK,
+				RESET,
+				ARADDR,
+				WADDR,
+				RDATA,
+				WDATA,
+				RVALID,
+				WVALID,
+				ARVALID
+				);
 
-input 	[WIDTH-1:0]		in;
-output 	[OWIDTH-1:0]	out;
+parameter ADDR_WIDTH = 10;
+parameter DATA_WIDTH = 64;
 
-wire    [OWIDTH-1:0]    temp [WIDTH:0];
+localparam SIZE = 2 ** ADDR_WIDTH;
 
-// We assume this is the index
-assign temp[0] = 0;
+input 					CLK, RESET;
+input [ADDR_WIDTH-1:0] 	ARADDR, WADDR;
+input 					ARVALID, WVALID;
+input [DATA_WIDTH-1:0]	WDATA;
 
-genvar i;
-generate
-    //Go through every bit
-    for(i=0; i<WIDTH; i=i+1) begin : PRIENC
-        // If we find a 0 (empty slot), then store i, else propogate
-        assign temp[i+1] = (in[i]==1'b0) ? i : temp[i]; 
-    end
-endgenerate
+output reg [DATA_WIDTH-1:0]		RDATA;
+output reg				        RVALID;
 
-assign out = temp[WIDTH];
+always @(posedge CLK or negedge RESET) begin
+	if(~RESET) begin
+		RDATA   <= {DATA_WIDTH{1'b0}};
+		RVALID  <= 1'b0;
+	end
+
+	else begin
+		if(ARVALID) begin
+			RVALID 	<= 1'b1;
+			RDATA 	<= 1;
+		end
+		else begin
+			RVALID	<= 1'b0;
+		end
+	end
+end
 
 endmodule

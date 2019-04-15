@@ -1,3 +1,24 @@
+// 
+// Author: Kartik Hegde (kartikhegde.net)
+//
+// Copyright (c) 2019 Authors of "Buffets: An Efficient and Composable Storage Idiom for Explicit Decoupled Data
+// Orchestration".
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+// Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+// COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+
 `include "buffet_defines.v"
 
 module buffet(
@@ -24,9 +45,6 @@ module buffet(
             update_receive_ack,
             // Shrink Port
             is_shrink,
-            //shrink_ready,
-            //shrink_size,
-            //shrink_size_valid,
             // Credits
             credit_ready,
             credit_out,
@@ -82,9 +100,6 @@ module buffet(
 	// Shrinks share the same port as read in order to maintain ordering.
     // read_idx will be considered as shrink size.
     input                   is_shrink;
-	//input  [IDX_WIDTH-1:0]  shrink_size;
-	//input                   shrink_size_valid;
-	//output                  shrink_ready; // Implementors note: this only goes low because of back-pressure from read_data_ready. It is not meant to be anything that is a function of the current request's status.
 
 	// Operation: Update(Index, Data) -> void;
 	// Closely resembles scratchpad write but with relative index, and
@@ -125,7 +140,7 @@ fifo
             .DATA_WIDTH(IDX_WIDTH+2),
             .FIFO_DEPTH(`READREQ_FIFO_DEPTH)
         )
-        u_fifo_readreq
+        u_channel_readreq
         (
             .clk(clk),
             .nreset_i(nreset_i),
@@ -143,7 +158,7 @@ fifo
             .DATA_WIDTH(DATA_WIDTH),
             .FIFO_DEPTH(`READRESP_FIFO_DEPTH)
         )
-        u_fifo_readresp
+        u_channel_readresp
         (
             .clk(clk),
             .nreset_i(nreset_i),
@@ -160,7 +175,7 @@ fifo
             .DATA_WIDTH(IDX_WIDTH+DATA_WIDTH),
             .FIFO_DEPTH(`UPDATE_FIFO_DEPTH)
         )
-        u_fifo_update
+        u_channel_update
         (
             .clk(clk),
             .nreset_i(nreset_i),
@@ -177,7 +192,7 @@ fifo
             .DATA_WIDTH(DATA_WIDTH),
             .FIFO_DEPTH(`PUSH_FIFO_DEPTH)
         )
-        u_fifo_push
+        u_channel_push
         (
             .clk(clk),
             .nreset_i(nreset_i),
